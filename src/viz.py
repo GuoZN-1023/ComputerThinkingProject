@@ -388,18 +388,20 @@ def plot_online_curves(history):
     active = None
     if "active_stations" in history:
         active = np.array(history["active_stations"])
+    elif "used_stations" in history:
+        # number of stations that received at least one arrival in this time slice
+        active = np.array(history["used_stations"])
     elif "y_t" in history:
         # y_t: list/array of y vectors each time; compute active count
         active = np.array([np.sum(np.array(y) > 0.5) for y in history["y_t"]])
-
     if active is not None and len(active) == len(t):
-        fig, ax = plt.subplots(figsize=(7.6, 2.8))
-        ax.plot(t, active, linewidth=1.1, color=COLOR_RED)
-        ax.set_title("Active stations over time")
-        ax.set_xlabel("t")
-        ax.set_ylabel("# active stations")
-        plt.show()
-
+            fig, ax = plt.subplots(figsize=(7.6, 2.8))
+            ax.plot(t, active, linewidth=1.1, color=COLOR_RED)
+            ax.set_title("Active stations over time")
+            ax.set_xlabel("t")
+            ax.set_ylabel("# active stations")
+            plt.show()
+    
 def plot_objective_terms_separated(history, *, normalized=True, rolling=None):
     """
     将 walk / overflow / imbalance / build 四个目标项拆分成 2×2 子图绘制，避免叠在一起过于混乱。
@@ -493,3 +495,103 @@ def plot_objective_terms_separated(history, *, normalized=True, rolling=None):
 
     fig.suptitle("Objective terms ({})".format("normalized" if normalized else "raw"))
     plt.show()
+
+
+def plot_station_distribution_panels(stations_df, cap, L_hist, times=(7, 12, 18, 22),
+                                     title="Station load distribution (size=L, color=L/cap)"):
+    """
+    在同一张大图上对比多个时间片的站点分布。
+    - 点大小：站点负载/车辆数 L
+    - 点颜色：饱和度 L/cap（蓝→绿→黄→红，对齐调色板）
+
+    Parameters
+    ----------
+    stations_df : pd.DataFrame
+        站点信息表，需包含 lon/lat（或 lng/latitude, x/y 等同义列）
+    cap : array-like, shape (J,)
+        站点容量
+    L_hist : array-like, shape (T, J)
+        每个时间片的站点负载/车辆数
+    times : tuple[int]
+        需要展示的时间片索引
+    """
+    set_journal_style()
+
+    cap = np.asarray(cap, dtype=float)
+    L_hist = np.asarray(L_hist, dtype=float)
+
+    # 自动识别经纬度列
+    cols = {c.lower(): c for c in stations_df.columns}
+    xcol = cols.get("lon") or cols.get("lng") or cols.get("longitude") or cols.get("x")
+    ycol = cols.get("lat") or cols.get("latitude") or cols.get("y")
+    if xcol is None or ycol is None:
+        raise KeyError(f"Cannot find lon/lat columns in stations_df: {list(stations_df.columns)}")
+
+    xs = stations_df[xcol].to_numpy()
+    ys = stations_df[ycol].to_numpy()
+
+    n = len(times)
+    fig, axes = plt.subplots(1, n, figsize=(3.2 * n, 3.1), sharex=True, sharey=True)
+    if n == 1:
+        axes = [axes]
+
+    for ax, t in zip(axes, times):
+        if t < 0 or t >= L_hist.shape[0]:
+            raise IndexError(f"time index {t} out of range [0, {L_hist.shape[0]-1}]")
+        L = L_hist[t]
+        sat = np.clip(L / np.maximum(cap, 1e-9), 0, 1)
+
+        # 点大小：按分位数缩放，避免极端值撑爆尺度
+        denom = np.percentile(L[L > 0], 90) if np.any(L > 0) else 1.0
+        s = 8 + 60 * np.clip(L / max(denom, 1e-9), 0, 1)
+
+        # 分段颜色（直观、易讲故事）
+        colors = np.where(sat < 0.33, COLOR_BLUE,
+                  np.where(sat < 0.66, COLOR_GREEN,
+                  np.where(sat < 0.90, COLOR_YELLOW, COLOR_RED)))
+
+        ax.scatter(xs, ys, s=s, c=colors, alpha=0.85, edgecolors="none")
+        ax.set_title(f"{int(t):02d}:00")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_aspect("equal")
+
+    fig.suptitle(title, y=1.04)
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_bike_stock_summary(history):
+    """
+    展示站内总车量、满站/空站数量随时间的变化。
+    要求 history 至少包含：
+    - total_bikes_in_stations
+    - num_full_stations
+    - num_empty_stations
+    """
+    set_journal_style()
+
+    if "total_bikes_in_stations" not in history:
+        raise KeyError("history missing 'total_bikes_in_stations'. Run online simulation with updated simulate.py.")
+
+    total_bikes = np.asarray(history["total_bikes_in_stations"], dtype=float)
+    full_cnt = np.asarray(history.get("num_full_stations", []), dtype=float)
+    empty_cnt = np.asarray(history.get("num_empty_stations", []), dtype=float)
+    t = np.arange(len(total_bikes))
+
+    fig, ax = plt.subplots(figsize=(7.6, 3.0))
+    ax.plot(t, total_bikes, color=COLOR_BLUE, linewidth=1.2)
+    ax.set_title("Total bikes in stations over time")
+    ax.set_xlabel("t")
+    ax.set_ylabel("Total bikes (in stations)")
+    plt.show()
+
+    if full_cnt.size and empty_cnt.size and len(full_cnt) == len(total_bikes) and len(empty_cnt) == len(total_bikes):
+        fig, ax = plt.subplots(figsize=(7.6, 3.0))
+        ax.plot(t, full_cnt, color=COLOR_RED, linewidth=1.1, label="full stations")
+        ax.plot(t, empty_cnt, color=COLOR_GREEN, linewidth=1.1, label="empty stations")
+        ax.set_title("Full/Empty stations over time")
+        ax.set_xlabel("t")
+        ax.set_ylabel("# stations")
+        ax.legend()
+        plt.show()
